@@ -1,0 +1,740 @@
+---
+- name: Prepare and install WordPress on host "wordpress"
+  become: true
+  gather_facts: true
+  hosts: wordpress
+  tags:
+    - wordpress
+  tasks:
+    - name: Install Apache
+      yum:
+        name: httpd
+        state: latest
+
+    - name: Start Apache
+      systemd:
+        name: httpd
+        state: started
+
+#    - name: Install repos for php 7,4 №1
+#      shell: yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+
+    - name: Install epel-release
+      package:
+        name: epel-release
+        state: present
+        update_cache: yes
+
+    - name: Install repos for php 7,4 №2
+      yum:
+        name: http://rpms.remirepo.net/enterprise/remi-release-7.rpm 
+#      shell: yum install -y https://rpms.remirepo.net/enterprise/remi-release-7.rpm 
+
+    - name: Install yum-utils
+      yum:
+        name: yum-utils
+        state: present
+
+    - name: Enable remi-php74
+      shell: yum-config-manager --enable remi-php74
+
+    - name: Update all packets
+      yum:
+        name: '*' 
+        state: latest
+        skip_broken: true
+
+    - name: Install PHP 7.4 packets
+      yum:
+        name: 
+          - php
+          - php-cli
+          - php-mysql
+          - mod_ssl
+          - openssl
+        state: present
+
+    - name: Restart Apache
+      systemd: 
+        name: httpd
+        state: restarted
+        enabled: true
+
+    - name: Copy prometheus repo file
+      copy:
+        src: files/prometheus.repo
+        dest: /etc/yum.repos.d/prometheus.repo
+        mode: '0644'
+
+    - name: Copy node_exporter rpm file
+      copy:
+        src: files/node_exporter-1.6.1-1.el7.x86_64.rpm
+        dest: /var/cache/yum/x86_64/7/prometheus/packages/
+
+    - name: Install prometheus node exporter
+      yum:
+        name: node_exporter
+        state: present
+
+    - name: Started prometheus node exporter
+      systemd:
+        name: node_exporter
+        state: started
+        enabled: true
+
+- name: Prepare and install MySQL on host "mysql"
+  become: true
+  gather_facts: true
+  hosts: mysql
+  tags:
+    - mysql
+    - db_on_mysql
+  tasks:
+    - name: Install epel-release
+      package:
+        name: epel-release
+        state: present
+        update_cache: yes
+
+    - name: Install needed soft
+      package:
+        name:
+         - nano
+         - gcc
+         - python-pip    
+         - python-devel
+         - mysql-devel
+        state: present
+        update_cache: yes
+
+    - name: Install pip mysql-python for Ansible <=> MySQL
+      pip:
+        name: mysql-python
+        state: present
+
+    - name: Copy repos for MySQL
+      copy:
+        src: files/mysql-community.repo
+        dest: /etc/yum.repos.d/mysql-community.repo
+        mode: '0644'
+
+    - name: Copy GPG key for repos
+      copy:
+        src: files/RPM-GPG-KEY-mysql
+        dest: /etc/pki/rpm-gpg/RPM-GPG-KEY-mysql
+        mode: '0644'
+
+    - name: Update all packets
+      yum:
+        name: '*'
+        state: latest
+
+    - name: Install MySQL Server
+      yum:
+        name: mysql-server
+        state: latest
+
+    - name: Copy MySQL configuration
+      template:
+        src: templates/mysql_conf.j2
+        dest: /etc/my.cnf
+
+    - name: Start MySQL Server
+      systemd:
+        name: mysqld
+        state: started
+        enabled: true
+
+- name: Create database for WordPress and add new users "wordpress" and "replication"
+  become: true
+  vars_files: defaults/main.yml
+  gather_facts: true
+  hosts: mysql
+  tags:
+    - db_users_on_mysql
+    - mysql
+  tasks:
+    - name: Update mysql password for root
+      mysql_user:
+        # Update the superuser to have all grants and a password
+        name: root
+        host_all: true
+        password: "{{ db_root_password_on_mysql }}"
+        priv: "*.*:ALL,GRANT"
+        # Login *as root* to perform this change, even though you might
+        # be altering the root user itself
+        login_user: root
+        login_password: "{{ db_root_password_on_mysql }}"
+#        login_port: "{{ mysql_port }}"
+        login_host: localhost
+        login_unix_socket: /var/lib/mysql/mysql.sock
+        # As a good measure,have ansible check whether an implicit login
+        # is possible first
+        check_implicit_admin: yes
+
+    - name: Template login password config on host mysql
+      template:
+        src: templates/root.j2
+        dest: /root/.my.cnf
+        mode: '0644'
+
+    - name: Create a new database wordpress
+      community.mysql.mysql_db:
+        name: wordpress
+        state: present
+
+    - name: Add new user "replication" and add all priveleges
+      community.mysql.mysql_user:
+        name: replication
+        password: "{{ db_replication_password_on_mysql }}"
+        host: 192.168.56.12
+        priv: '*.*:ALL'
+        state: present
+      tags:
+        - rp_user
+
+    - name: Add new user "wordpress" and add all priveleges
+      community.mysql.mysql_user:
+        name: wordpress
+        password: "{{ db_wordpress_password_on_mysql }}"
+        host: 192.168.56.10
+        priv: '*.*:ALL'
+        state: present
+      tags:
+        - wp_user
+
+    - name: Copy node_exporter rpm file
+      copy:
+        src: files/node_exporter-1.6.1-1.el7.x86_64.rpm
+        dest: /var/cache/yum/x86_64/7/prometheus/packages/
+
+    - name: Copy prometheus repo file
+      copy:
+        src: files/prometheus.repo
+        dest: /etc/yum.repos.d/prometheus.repo
+        mode: '0644'
+
+    - name: Copy grafana repo file
+      copy:
+        src: files/grafana.repo
+        dest: /etc/yum.repos.d/grafana.repo
+        mode: '0644'
+
+    - name: Install prometheus node exporter
+      yum:
+        name: node_exporter
+        state: present
+
+    - name: Started prometheus node exporter
+      systemd:
+        name: node_exporter
+        state: started
+        enabled: true
+
+- name: Install Wordpress on host "wordpress"
+  become: true
+  gather_facts: false
+  hosts: wordpress
+  tags:
+    - wp_install
+    - wordpress
+  tasks:
+
+  - name: Installing unzip and some selinux helpers
+    yum:
+      name: 
+        - unzip
+        - libselinux-python
+        - libsemanage-python
+      state: present
+
+  - name: Download and unzip Wordpress
+    unarchive:
+      src: https://wordpress.org/latest.zip
+      dest: /var/www/html/
+      remote_src: yes
+
+  - name: Copy config wordpress
+    copy:
+      src: files/wp-config.php
+      dest: /var/www/html/wordpress/wp-config.php
+      mode: '0644'
+
+  - name: Mkdir for wordpress
+    file:
+      path: /var/www/html//wordpress/wp-content/uploads
+      state: directory
+
+  - name: Settings SELinux parameters to allow db connect
+    ansible.posix.seboolean:
+      name: httpd_can_network_connect_db
+#        - httpd_can_network_connect
+#        - httpd_can_network_connect_db
+#        - httpd_unified
+      state: true
+      persistent: true
+
+  - name: Copy httpd conf
+    copy:
+      src: files/httpd.conf
+      dest: /etc/httpd/conf/httpd.conf 
+
+  - name: Copy ssl conf
+    copy:
+      src: files/ssl.conf
+      dest: /etc/httpd/conf.d/ssl.conf
+
+  - name: Copy certs
+    copy:
+      src: files/ca.crt
+      dest: /etc/pki/tls/certs/ca.crt
+
+  - name: Copy certs2
+    copy:
+      src: files/ca.key
+      dest: /etc/pki/tls/private/ca.key
+
+  - name: Copy certs3
+    copy:
+      src: files/ca.csr
+      dest: /etc/pki/tls/private/ca.csr
+
+  - name: Restart httpd
+    systemd:
+      name: httpd
+      state: restarted
+
+- name: Enable backup of DB
+  become: true
+  gather_facts: false
+  hosts: mysql
+  tags:
+    - db_backup
+  tasks:
+  - name: Install xtrabackup latest from percona repo
+    yum:
+      name: xtrabackup
+      state: latest
+
+  - name: Copy script for backup database every 5 minut
+    copy:
+      src: files/db_backup.sh
+      dest: /root/db_backup.sh
+      mode: '0777'
+
+  - name: Copy unit files
+    copy:
+      src: files/backup.service
+      dest: /etc/systemd/system/backup.service
+
+  - name: Copy unit files
+    copy:
+      src: files/backup.timer
+      dest: /etc/systemd/system/backup.timer
+
+  - name: Start service backup
+    systemd:
+      name: backup.timer
+      state: started
+      enabled: true
+
+  - name: Start service backup
+    systemd:
+      name: backup.service
+      state: started
+      enabled: true
+
+- name: Prepare and install MySQL on host replica
+  become: true
+  gather_facts: true
+  hosts: replica
+  tags:
+    - replica
+  tasks:
+    - name: Install needed repos
+      package:
+        name: 
+         - yum-utils
+         - epel-release
+        state: present
+        update_cache: yes
+
+    - name: Install needed soft
+      package:
+        name: 
+         - nano
+         - gcc
+         - python-pip
+         - python-devel
+         - mysql-devel
+        state: present
+        update_cache: yes
+
+    - name: Install pip mysql-python
+      pip:
+        name: mysql-python
+        state: present
+
+    - name: Copy repos for MySQL
+      copy:
+        src: files/mysql-community.repo
+        dest: /etc/yum.repos.d/mysql-community.repo
+        mode: '0644'
+
+    - name: Copy GPG key for repos
+      copy:
+        src: files/RPM-GPG-KEY-mysql
+        dest: /etc/pki/rpm-gpg/RPM-GPG-KEY-mysql
+        mode: '0644'
+
+    - name: Update all packets
+      yum:
+        name: '*'
+        state: latest
+
+    - name: Install MySQL Server
+      yum:
+        name: mysql-server
+        state: latest
+
+    - name: Copy MySQL configuration
+      template:
+        src: templates/mysql_conf.j2
+        dest: /etc/my.cnf
+
+    - name: Start MySQL Server
+      systemd:
+        name: mysqld
+        state: started
+        enabled: true
+
+    - name: Copy node_exporter rpm file
+      copy:
+        src: files/node_exporter-1.6.1-1.el7.x86_64.rpm
+        dest: /var/cache/yum/x86_64/7/prometheus/packages/
+
+    - name: Copy prometheus repo file
+      copy:
+        src: files/prometheus.repo
+        dest: /etc/yum.repos.d/prometheus.repo
+        mode: '0644'
+
+    - name: Copy grafana repo file
+      copy:
+        src: files/grafana.repo
+        dest: /etc/yum.repos.d/grafana.repo
+        mode: '0644'
+
+    - name: Install prometheus node exporter
+      yum:
+        name: node_exporter
+        state: present
+
+    - name: Started prometheus node exporter
+      systemd:
+        name: node_exporter
+        state: started
+        enabled: true
+
+
+- name: Create replica database, add user "root"
+  become: true
+  vars_files: defaults/main.yml
+  gather_facts: true
+  hosts: replica
+  tags:
+    - users
+    - replica
+  tasks:
+    - name: Create database replica, add user "root"
+      community.mysql.mysql_user:
+        login_unix_socket: /var/lib/mysql/mysql.sock
+        name: root
+        password: "{{ db_root_password_on_replica }}"
+        state: present
+
+    - name: Template config file with password on replica
+      template:
+        src: templates/root.j2
+        dest: /root/.my.cnf
+        mode: '0644'
+      tags:
+        test1
+
+    - name: Create a new replica database wordpress
+      community.mysql.mysql_db:
+        name: wordpress
+        state: present
+
+- name: Prepare replication between mysql and replica
+  become: true
+  vars_files: defaults/main.yml
+  gather_facts: true
+  hosts: mysql, replica
+  tags:
+    - replication
+  tasks:
+    - name: Dump database from mysql
+      community.mysql.mysql_db:
+        state: dump
+        name: wordpress
+        target: /tmp/wordpress_backup.sql
+      when: ansible_hostname == "mysql"
+
+    - name: Fetch database backup file to host
+      fetch:
+        src: /tmp/wordpress_backup.sql
+        dest: backup/wordpress_backup.sql
+        flat: true
+      when: ansible_hostname == "mysql"
+
+    - name: Copy database backup file on replica
+      copy:
+        src:  backup/wordpress_backup.sql
+        dest: /tmp/wordpress_backup.sql
+        mode: '0742'
+      when: ansible_hostname == "replica"
+
+    - name: Restore database mysql
+      community.mysql.mysql_db:
+        name: wordpress
+        state: import
+        target: /tmp/wordpress_backup.sql
+      when: ansible_hostname == "replica"
+
+    - name: Restart MySQL on mysql
+      systemd:
+        name: mysqld
+        state: restarted
+      when: ansible_hostname == "mysql"
+
+    - name: Restart MySQL on replica
+      systemd:
+        name: mysqld
+        state: restarted
+      when: ansible_hostname == "replica"
+
+    - name: Copy bin script to wordpress
+      copy:
+        src: files/bin-log.sh
+        dest: /root/bin-log.sh
+        mode: '0777'
+
+    - name: Run script .bin-log.sh
+      shell: /root/bin-log.sh
+      when: ansible_hostname == "mysql"
+
+    - name: Fetch log file to host
+      fetch:
+        src: /root/bin-log.txt
+        dest: backup/bin-log.txt
+        flat: true 
+      when: ansible_hostname == "mysql"
+
+- name: Start replication process
+  become: true
+  vars_files: defaults/main.yml
+  gather_facts: true
+  hosts: replica
+  tags:
+    - starting
+  tasks:
+    - name: Confugure replication process on slave
+      community.mysql.mysql_replication:
+        mode: changeprimary
+        primary_log_file: "{{ bin_log_number }}"
+        primary_log_pos: "{{ queue_number }}"
+        primary_host: 192.168.56.11
+        primary_user: replication
+        primary_password: "{{ db_replication_password_on_mysql }}"
+      when: ansible_hostname == "replica"
+
+    - name: Start replication process
+      community.mysql.mysql_replication:
+        mode: startreplica
+      when: ansible_hostname == "replica"
+
+- name: Instalation prometheus, loki, grafana 
+  become: true
+  gather_facts: false
+  hosts: monitoring
+  tags:
+    - monitoring
+  tasks:
+    - name: Copy node_exporter rpm file
+      copy:
+        src: files/node_exporter-1.6.1-1.el7.x86_64.rpm
+        dest: /var/cache/yum/x86_64/7/prometheus/packages/
+
+    - name: Copy prometheus repo file
+      copy:
+        src: files/prometheus.repo
+        dest: /etc/yum.repos.d/prometheus.repo
+        mode: '0644'
+
+    - name: Copy grafana repo file
+      copy:
+        src: files/grafana.repo
+        dest: /etc/yum.repos.d/grafana.repo
+        mode: '0644'
+
+    - name: Install prometheus 
+      yum:
+        name: prometheus
+        state: present
+
+    - name: Copy prometheus config
+      copy:
+        src: files/prometheus.yml
+        dest: /etc/prometheus/prometheus.yml
+
+    - name: Install grafana
+      yum:
+        name: https://dl.grafana.com/oss/release/grafana-10.2.0-1.x86_64.rpm
+        state: present
+
+    - name: Install loki
+      yum:
+        name: https://sourceforge.net/projects/grafana-loki.mirror/files/v2.9.1/loki-2.9.1.x86_64.rpm
+        state: present
+        validate_certs: false
+
+    - name: Start prometheus
+      systemd:
+        name: prometheus
+        state: started
+        enabled: true
+
+    - name: Start grafana
+      systemd:
+        name: grafana-server.service
+        state: started
+        enabled: true
+
+    - name: Start loki
+      systemd:
+        name: loki
+        state: started
+        enabled: true
+
+    - name: Install prometheus node exporter
+      yum:
+        name: node_exporter
+        state: present
+
+    - name: Started prometheus node exporter
+      systemd:
+        name: node_exporter
+        state: restarted
+        enabled: true
+
+- name: Install and run promtail
+  become: true
+  gather_facts: false
+  hosts: wordpress
+  tags:
+    - promtail
+  tasks:
+    - name: Copy promtail rpm file
+      copy:
+        src: files/promtail-2.9.1.x86_64.rpm
+        dest: /var/cache/yum/x86_64/7/grafana/packages/
+
+    - name: Copy grafana repo file
+      copy:
+        src: files/grafana.repo
+        dest: /etc/yum.repos.d/grafana.repo
+        mode: '0644'
+      tags:
+        - promtail_wordpress
+
+    - name: Install loki promtail
+      yum:
+        name: promtail
+        state: present
+      tags: 
+        - promtail_wordpress
+
+    - name: Copy loki promtail config
+      copy:
+        src:  files/config.yml
+        dest: /etc/promtail/config.yml
+        mode: '0777'
+      tags: 
+        - promtail_wordpress
+
+    - name: Copy loki promtail config
+      copy:
+        src:  files/promtail.service
+        dest: /etc/systemd/system/promtail.service
+        mode: '0777'
+      tags: 
+        - promtail_wordpress
+
+    - name: Started loki promtail
+      systemd:
+        name: promtail
+        state: restarted
+        enabled: true   
+      tags: 
+        - promtail_wordpress
+
+    - name: Daemon-reload promtail
+      systemd:
+        daemon_reload: true
+      tags: 
+        - promtail_wordpress
+
+    - name: Started loki promtail
+      systemd:
+        name: promtail
+        state: restarted
+        enabled: true   
+      tags: 
+        - promtail_wordpress
+
+
+
+
+
+
+
+# - name: Dump database on host2
+#   become: true
+#   gather_facts: true
+#   hosts: wordpress
+#   tags:
+#     - dump_databases
+#   tasks:
+#     - name: Dump databases
+#       community.mysql.mysql_db:
+#         state: dump
+#         name: wordpress
+#         target: /tmp/wordpress_backup.sql
+
+#     - name: Fetch database backup file
+#       fetch:
+#         src: /tmp/wordpress_backup.sql
+#         dest: backup/{{ ansible_date_time.date }}_{{ ansible_date_time.time }}_wordpress.sql
+#         flat: true
+
+- name: Restore database wordpress on mysql
+  become: true
+#       vars_files: defaults/main.yml
+  gather_facts: false
+  hosts: mysql
+  tags:
+    - restore_databases
+  tasks:
+    - name: Copy database backup file on wordpress
+      copy: 
+        src:  backup/wordpress_backup.sql
+        dest: /tmp/wordpress_backup.sql
+        mode: '0742'
+
+    - name: Restore database wordpress
+      community.mysql.mysql_db:
+        name: wordpress
+        state: import
+        target: /tmp/wordpress_backup.sql
+

@@ -1,0 +1,9 @@
+[client]
+user=root
+{% if ansible_hostname == "mysql" %}
+password={{ db_root_password_on_mysql }} 
+{% elif ansible_hostname == "wordpress" %}
+password={{ db_root_password_on_mysql }}
+{% elif ansible_hostname == "replica" %}
+password={{ db_root_password_on_replica }}
+{% endif %}

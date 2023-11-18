@@ -1,0 +1,21 @@
+#  Way to backup dabase WordPress from wordpress host on host
+way_to_backup: backup/2023-11-11_01:02:23_wordpress.sql
+
+#Password user "root" for MySQL on mysql host
+db_root_password_on_mysql: 12345678
+
+#Password user "replication" for MySQL on mysql host
+db_replication_password_on_mysql: 12345678
+
+#Password for user "wordpress" on wordpress host
+db_wordpress_password_on_wordpress: 12345678
+
+#Password for user "wordpress" on mysql host
+db_wordpress_password_on_mysql: 12345678
+
+#Password for user "root" on replica host
+db_root_password_on_replica: 12345678
+
+#For start replication
+bin_log_number: mysql-bin.000001
+queue_number: 120
